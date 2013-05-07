@@ -76,7 +76,7 @@ module Live::Ctypes
     
     class InternalPtr < Struct.new(
       :name, 
-      :sizeof, 
+      :vsize, 
       :addr2ruby, 
       :ruby2addr,
       :copyctor,
@@ -85,8 +85,8 @@ module Live::Ctypes
         ActualPtr.new.tap{|x| x._ptrclass = self}._init(*a)
       end
       
-      def vsize
-        self.sizeof == 0 ? 1 : self.sizeof
+      def sizeof
+        self.vsize == 0 ? 1 : self.vsize
       end
       
       def fromaddr(addr)
@@ -104,6 +104,7 @@ module Live::Ctypes
       def inspect
         "Live::CTypes #{name}"
       end
+      
     end
     
     
@@ -127,6 +128,9 @@ module Live::Ctypes
       end
       def values=(*args)
         args.each_with_index{|x, i| self[i] = x}  
+      end
+      def sizeof
+        4
       end
     end
     
@@ -183,10 +187,13 @@ module Live::Ctypes
     [size, ru(size, v), pw(size, v)]
   end
   
+  
+  
+  
   make_type :c_byte,   *srupw(1, "C")
   make_type :c_char,   *srupw(1, "a1")
   make_type :c_double, *srupw(8, "d")
-  make_type :c_float,  *srupw(1, "f")
+  make_type :c_float,  *srupw(4, "f")
   make_type :c_int,  *srupw(4, "i")
   make_type :c_int8,  *srupw(1, "c")
   make_type :c_int16,  *srupw(2, "s")
@@ -194,7 +201,7 @@ module Live::Ctypes
   make_type :c_int64,  *srupw(8, "q")
   make_type :c_long,  *srupw(4, "l")
   make_type :c_longlong,  *srupw(8, "q")
-  make_type :c_short,  *srupw(4, "s")
+  make_type :c_short,  *srupw(2, "s")
   make_type :c_sizet,  *srupw(4, "L")
   make_type :c_ubyte,  *srupw(4, "C")
   make_type :c_uint8,  *srupw(1, "C")
@@ -232,6 +239,83 @@ module Live::Ctypes
     Internal::Pointer.new.tap{|x| x.contents = v}    
   end
     
+  class Structure
+    FIELD = []
+    def fields
+      self.class.const_get(:FIELD)
+    end
+      
+    def alloc
+      @ptr = Internal::MALLOC.call(sizeof)  
+    end
+    
+    def sizeof
+      r = fields.map{|x|
+        x[1].sizeof
+      }.inject(:+).to_i
+      r == 0 ? 1 : r
+    end
+    
+    def _offsetof(member)
+      if i = fields.index{|x| x[0] == member}
+        fields[0...i].map(&:last).inject(:+).to_i
+      end
+    end
+    
+    def _member(member)
+      if i = fields.index{|x| x[0] == member}
+        offset = fields[0...i].map(&:last).map(&:sizeof).inject(:+).to_i
+        type   = fields[i].last
+        type.fromaddr(Internal::CPtr.new(@ptr + offset))
+      end
+    end
+    
+    def method_missing(sym, *args)
+      if sym.to_s[/=$/]
+        _member(sym.to_s.chomp("=").to_sym).value = args[0]
+      else
+        _member(sym.to_sym).value
+      end
+    end
+  end
+  
+  class Union
+    FIELD = []
+    def fields
+      self.class.const_get(:FIELD)
+    end
+      
+    def alloc
+      @ptr = Internal::MALLOC.call(sizeof)  
+    end
+    
+    def sizeof
+      r = fields.map{|x|
+        x[1].sizeof
+      }.max
+      r == 0 ? 1 : r
+    end
+    
+    def _offsetof(member)
+      0
+    end
+    
+    def _member(member)
+      if i = fields.index{|x| x[0] == member}
+        type   = fields[i].last
+        type.fromaddr(Internal::CPtr.new(@ptr))
+      end
+    end
+    
+    def method_missing(sym, *args)
+      if sym.to_s[/=$/]
+        _member(sym.to_s.chomp("=").to_sym).value = args[0]
+      else
+        _member(sym.to_sym).value
+      end
+    end
+  end
+  
   class WinFuncType
     def initialize(*ctypes)
       @ret = ctypes.shift
@@ -305,4 +389,14 @@ end
   ctypes.windll.user32.EnumWindows(enum,  5)
 =end
 
+=begin Test
+class Pt < Live::Ctypes::Struct
+  FIELD = [  [:x, ctypes.c_int], [:y, ctypes.c_float] ]
+end
 
+r = Pt.new
+r.alloc
+r.x = 3
+r.y = 5
+p r.x, r.y
+=end 
